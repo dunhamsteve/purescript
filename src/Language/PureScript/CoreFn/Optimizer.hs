@@ -7,9 +7,10 @@ import Language.PureScript.AST.Literals
 import Language.PureScript.AST.SourcePos
 import Language.PureScript.CoreFn.Ann
 import Language.PureScript.CoreFn.Expr
+import Language.PureScript.CoreFn.Meta
 import Language.PureScript.CoreFn.Module
 import Language.PureScript.CoreFn.Traversals
-import Language.PureScript.Names (Ident(UnusedIdent), Qualified(Qualified))
+import Language.PureScript.Names (Ident(UnusedIdent, Ident), Qualified(Qualified), ModuleName (ModuleName))
 import Language.PureScript.Label
 import Language.PureScript.Types
 import qualified Language.PureScript.Constants.Prim as C
@@ -24,7 +25,7 @@ optimizeModuleDecls :: [Bind Ann] -> [Bind Ann]
 optimizeModuleDecls = map transformBinds
   where
   (transformBinds, _, _) = everywhereOnValues identity transformExprs identity
-  transformExprs = optimizeUnusedPartialFn . optimizeClosedRecordUpdate
+  transformExprs = optimizeUnusedPartialFn . optimizeClosedRecordUpdate . optimizeNewType . optimizeApply
 
 optimizeClosedRecordUpdate :: Expr Ann -> Expr Ann
 optimizeClosedRecordUpdate ou@(ObjectUpdate a@(_, _, Just t, _) r updatedFields) =
@@ -54,3 +55,11 @@ optimizeUnusedPartialFn (Let _
   (App _ (App _ (Var _ (Qualified _ UnusedIdent)) _) originalCoreFn)) =
   originalCoreFn
 optimizeUnusedPartialFn e = e
+
+optimizeApply :: Expr Ann -> Expr Ann
+optimizeApply (App _ (Var _ (Qualified (Just (ModuleName "Data.Function")) (Ident "apply"))) c) = c
+optimizeApply e = e
+
+optimizeNewType :: Expr Ann -> Expr Ann
+optimizeNewType (App _ (Var (_, _, _, Just IsNewtype) _) e) = e
+optimizeNewType e = e
