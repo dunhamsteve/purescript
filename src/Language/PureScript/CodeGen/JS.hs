@@ -211,9 +211,9 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
   valueToJs' (Literal (pos, _, _, _) l) =
     rethrowWithPosition pos $ literalToValueJS pos l
   valueToJs' (Var (_, _, _, Just (IsConstructor _ [])) name) =
-    return $ accessorString "value" $ qualifiedToJS id name
+    return $ qualifiedToJS id name
   valueToJs' (Var (_, _, _, Just (IsConstructor _ _)) name) =
-    return $ accessorString "create" $ qualifiedToJS id name
+    return $ qualifiedToJS id name
   valueToJs' (Accessor _ prop val) =
     accessorString prop <$> valueToJs val
   valueToJs' (ObjectUpdate _ o ps) = do
@@ -222,14 +222,12 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     extendObj obj sts
   valueToJs' e@(Abs (_, _, _, Just IsTypeClassConstructor) _ _) =
     let args = unAbs e
-    in return $ AST.Function Nothing Nothing (map identToJs args) (AST.Block Nothing $ map assign args)
+    in return $ AST.Function Nothing Nothing (map identToJs args) 
+      (AST.Block Nothing [ AST.Return Nothing $ AST.ObjectLiteral Nothing (zip (map (mkString . runIdent) args) (map var args))])
     where
     unAbs :: Expr Ann -> [Ident]
     unAbs (Abs _ arg val) = arg : unAbs val
     unAbs _ = []
-    assign :: Ident -> AST
-    assign name = AST.Assignment Nothing (accessorString (mkString $ runIdent name) (AST.Var Nothing "this"))
-                               (var name)
   valueToJs' (Abs _ arg val) = do
     ret <- valueToJs val
     let jsArg = case arg of
@@ -242,9 +240,11 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     case f of
       Var (_, _, _, Just IsNewtype) _ -> return (head args')
       Var (_, _, _, Just (IsConstructor _ fields)) name | length args == length fields ->
-        return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
+        let fields' = map (mkString . runIdent) fields:: [PSString]
+            tag = AST.StringLiteral Nothing $ mkString $ runIdent $ disqualify name
+        in return $ AST.ObjectLiteral Nothing $ (mkString "TAG", tag) : zip fields' args'
       Var (_, _, _, Just IsTypeClassConstructor) name ->
-        return $ AST.Unary Nothing AST.New $ AST.App Nothing (qualifiedToJS id name) args'
+        return $ AST.App Nothing (qualifiedToJS id name) args'
       _ -> flip (foldl (\fn a -> AST.App Nothing fn [a])) args' <$> valueToJs f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
@@ -264,28 +264,21 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     ds' <- concat <$> mapM bindToJs ds
     ret <- valueToJs val
     return $ AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing (ds' ++ [AST.Return Nothing ret]))) []
-  valueToJs' (Constructor (_, _, _, Just IsNewtype) _ ctor _) =
-    return $ AST.VariableIntroduction Nothing (properToJs ctor) (Just $
-                AST.ObjectLiteral Nothing [("create",
-                  AST.Function Nothing Nothing ["value"]
-                    (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"]))])
-  valueToJs' (Constructor _ _ ctor []) =
-    return $ iife (properToJs ctor) [ AST.Function Nothing (Just (properToJs ctor)) [] (AST.Block Nothing [])
-           , AST.Assignment Nothing (accessorString "value" (AST.Var Nothing (properToJs ctor)))
-                (AST.Unary Nothing AST.New $ AST.App Nothing (AST.Var Nothing (properToJs ctor)) []) ]
+  -- REVIEW - is this dead code? - maybe if you try passing around the constructor as a function?
+  valueToJs' (Constructor (_, _, _, Just IsNewtype) _ _ _) =
+    return $ AST.Function Nothing Nothing ["value"]
+                (AST.Block Nothing [AST.Return Nothing $ AST.Var Nothing "value"])
+  -- We can do this if we fix the callpoint to not call
+  valueToJs' (Constructor _ _ ctor []) = --return $ AST.Var Nothing $ properToJs ctor
+      let tag = AST.StringLiteral Nothing $ mkString $ runProperName ctor
+      in return $ AST.ObjectLiteral Nothing [(mkString "TAG", tag)]
   valueToJs' (Constructor _ _ ctor fields) =
-    let constructor =
-          let body = [ AST.Assignment Nothing ((accessorString $ mkString $ identToJs f) (AST.Var Nothing "this")) (var f) | f <- fields ]
-          in AST.Function Nothing (Just (properToJs ctor)) (identToJs `map` fields) (AST.Block Nothing body)
-        createFn =
-          let body = AST.Unary Nothing AST.New $ AST.App Nothing (AST.Var Nothing (properToJs ctor)) (var `map` fields)
-          in foldr (\f inner -> AST.Function Nothing Nothing [identToJs f] (AST.Block Nothing [AST.Return Nothing inner])) body fields
-    in return $ iife (properToJs ctor) [ constructor
-                          , AST.Assignment Nothing (accessorString "create" (AST.Var Nothing (properToJs ctor))) createFn
-                          ]
-
-  iife :: Text -> [AST] -> AST
-  iife v exprs = AST.App Nothing (AST.Function Nothing Nothing [] (AST.Block Nothing $ exprs ++ [AST.Return Nothing $ AST.Var Nothing v])) []
+    -- let body = AST.Unary Nothing AST.New $ AST.App Nothing (AST.Var Nothing (properToJs ctor)) (var `map` fields)
+    let tag = AST.StringLiteral Nothing $ mkString $ runProperName ctor
+        args = map (mkString . runIdent) fields
+        fields' = map var fields
+        body = AST.ObjectLiteral Nothing $ (mkString "TAG", tag) : zip  args fields'
+    in return $ foldr (\f inner -> AST.Function Nothing Nothing [identToJs f] (AST.Block Nothing [AST.Return Nothing inner])) body fields
 
   literalToValueJS :: SourceSpan -> Literal (Expr Ann) -> m AST
   literalToValueJS ss (NumericLiteral (Left i)) = return $ AST.NumericLiteral (Just ss) (Left i)
@@ -394,7 +387,9 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     return $ case ctorType of
       ProductType -> js
       SumType ->
-        [AST.IfElse Nothing (AST.InstanceOf Nothing (AST.Var Nothing varName) (qualifiedToJS (Ident . runProperName) ctor))
+        [AST.IfElse Nothing (AST.Binary Nothing AST.EqualTo 
+          (accessorString "TAG" (AST.Var Nothing varName))
+          ((AST.StringLiteral Nothing . mkString . runProperName . disqualify) ctor))
                   (AST.Block Nothing js)
                   Nothing]
     where
