@@ -164,11 +164,22 @@ indexer = mkPattern' match
   match (Indexer _ index val) = (,) <$> prettyPrintJS' index <*> pure val
   match _ = mzero
 
-lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
+lam :: Pattern PrinterState AST ((Text, [Text], Maybe SourceSpan), AST)
 lam = mkPattern match
   where
-  match (Function ss name args ret) = Just ((name, args, ss), ret)
+  match (Function ss (Just name) args ret) = Just ((name, args, ss), ret)
   match _ = Nothing
+
+-- This is an arrow function - we might want to add ArrowFunc to the AST and move
+-- these decisions up a layer
+arr :: Emit gen => Pattern PrinterState AST (([Text], Maybe SourceSpan, gen -> gen), AST)
+arr = mkPattern match
+  where
+  -- Object literals need parens so they don't look like blocks
+  match (Function ss Nothing args (Block _ [Return _ ret@(ObjectLiteral _ _)])) = Just ((args, ss, parensPos), ret)
+  match (Function ss Nothing args (Block _ [Return _ ret])) = Just ((args, ss, id), ret)
+  match (Function ss Nothing args ret) = Just ((args, ss, id), ret)
+  match _ = mzero
 
 app :: (Emit gen) => Pattern PrinterState AST (gen, AST)
 app = mkPattern' match
@@ -240,9 +251,11 @@ prettyPrintJS' = A.runKleisli $ runPattern matchValue
                   , [ unary New "new " ]
                   , [ Wrap lam $ \(name, args, ss) ret -> addMapping' ss <>
                       emit ("function "
-                        <> fromMaybe "" name
+                        <> name
                         <> "(" <> intercalate ", " args <> ") ")
                         <> ret ]
+                  , [ Wrap arr $ \(args, ss, wrapRet) ret -> addMapping' ss <>
+                      emit ("(" <> intercalate ", " args <> ") => ") <> wrapRet ret]
                   , [ unary     Not                  "!"
                     , unary     BitwiseNot           "~"
                     , unary     Positive             "+"
