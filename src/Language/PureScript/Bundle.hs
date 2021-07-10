@@ -314,6 +314,8 @@ withDeps (Module modulePath fn es) = Module modulePath fn (map expandDeps es)
           (map (m, , Internal) shorthandNames, bn)
     toReference (JSFunctionExpression _ _ _ params _ _) bn
       = ([], bn \\ mapMaybe unIdentifier (commaList params))
+    toReference (JSArrowExpression (JSParenthesizedArrowParameterList _ params _) _ _) bn
+      = ([], bn \\ mapMaybe unIdentifier (commaList params))
     toReference e bn
       | Just nm <- exportsAccessor e
       -- exports.foo means there's a dependency on the public member "foo" of

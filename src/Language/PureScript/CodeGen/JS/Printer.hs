@@ -26,6 +26,13 @@ import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS
 
 -- TODO (Christoph): Get rid of T.unpack / pack
 
+-- There is a bug in language-javascript (#118) that results in a parse error
+-- if an arrow value in an Object literal is followed by anything
+-- wrapping the arrow in parens works around it.
+wrapFunc :: (Emit gen) => AST -> gen -> gen
+wrapFunc (Function _ _ _ _) = parensPos
+wrapFunc _ = id
+
 literals :: (Emit gen) => Pattern PrinterState AST gen
 literals = mkPattern' match'
   where
@@ -46,7 +53,7 @@ literals = mkPattern' match'
   match (ObjectLiteral _ ps) = mconcat <$> sequence
     [ return $ emit "{\n"
     , withIndent $ do
-        jss <- forM ps $ \(key, value) -> fmap ((objectPropertyToString key <> emit ": ") <>) . prettyPrintJS' $ value
+        jss <- forM ps $ \(key, value) -> fmap (((objectPropertyToString key <> emit ": ") <>) . wrapFunc value) .  prettyPrintJS' $ value
         indentString <- currentIndent
         return $ intercalate (emit ",\n") $ map (indentString <>) jss
     , return $ emit "\n"
