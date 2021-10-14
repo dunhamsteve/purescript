@@ -106,7 +106,7 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     where
     go :: M.Map ModuleName (Ann, ModuleName) -> [Ident] -> [(Ann, ModuleName)] -> M.Map ModuleName (Ann, ModuleName)
     go acc used ((ann, mn') : mns') =
-      let mni = Ident $ runModuleName mn'
+      let mni = Ident $ moduleNameToJs mn'
       in if mn' /= mn && mni `elem` used
          then let newName = freshModuleName 1 mn' used
               in go (M.insert mn' (ann, newName) acc) (Ident (runModuleName newName) : used) mns'
@@ -161,6 +161,10 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
   -- Generate code in the simplified JavaScript intermediate representation for a declaration
   --
   bindToJs :: Bind Ann -> m [AST]
+  bindToJs (NonRec (_, _, _, Just IsTypeClassConstructor) _ _) = pure []
+    -- Unlike other newtype constructors, type class constructors are only
+    -- ever applied; it's not possible to use them as values. So it's safe to
+    -- erase them.
   bindToJs (NonRec ann ident val) = return <$> nonRecToJS ann ident val
   bindToJs (Rec vals) = forM vals (uncurry . uncurry $ nonRecToJS)
 
@@ -220,14 +224,6 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
     obj <- valueToJs o
     sts <- mapM (sndM valueToJs) ps
     extendObj obj sts
-  valueToJs' e@(Abs (_, _, _, Just IsTypeClassConstructor) _ _) =
-    let args = unAbs e
-    in return $ AST.Function Nothing Nothing (map identToJs args) 
-      (AST.Block Nothing [ AST.Return Nothing $ AST.ObjectLiteral Nothing (zip (map (mkString . runIdent) args) (map var args))])
-    where
-    unAbs :: Expr Ann -> [Ident]
-    unAbs (Abs _ arg val) = arg : unAbs val
-    unAbs _ = []
   valueToJs' (Abs _ arg val) = do
     ret <- valueToJs val
     let jsArg = case arg of
@@ -243,8 +239,6 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreign_ =
         let fields' = map (mkString . runIdent) fields:: [PSString]
             tag = AST.StringLiteral Nothing $ mkString $ runIdent $ disqualify name
         in return $ AST.ObjectLiteral Nothing $ (mkString "TAG", tag) : zip fields' args'
-      Var (_, _, _, Just IsTypeClassConstructor) name ->
-        return $ AST.App Nothing (qualifiedToJS id name) args'
       _ -> flip (foldl (\fn a -> AST.App Nothing fn [a])) args' <$> valueToJs f
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
